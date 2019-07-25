@@ -1,5 +1,6 @@
 .idea/
 venv/
+big_tsv/
 __pycache__/
 *.tsv
 *.gz

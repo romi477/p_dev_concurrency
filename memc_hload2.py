@@ -1,19 +1,16 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
 import os
-import gzip
 import sys
 import glob
+import gzip
 import logging
+import memcache
 import collections
 from time import time
-from optparse import OptionParser
-# brew install protobuf
-# protoc  --python_out=. ./appsinstalled.proto
-# pip install protobuf
+import threading as th
+from queue import Queue
 import appsinstalled_pb2
-# pip install python-memcached
-import memcache
+import multiprocessing as mp
+from optparse import OptionParser
 
 NORMAL_ERR_RATE = 0.01
 AppsInstalled = collections.namedtuple("AppsInstalled", ["dev_type", "dev_id", "lat", "lon", "apps"])
@@ -65,47 +62,57 @@ def parse_appsinstalled(line):
     return AppsInstalled(dev_type, dev_id, lat, lon, apps)
 
 
-def main(options):
+def fill_queue(text):
+    queue = Queue()
+    for line in text:
+        queue.put(line)
+    return queue
+
+def parse_text(options, q):
     device_memc = {
         "idfa": options.idfa,
         "gaid": options.gaid,
         "adid": options.adid,
         "dvid": options.dvid,
     }
-    for fn in glob.iglob(options.pattern):
-        processed = errors = 0
-        logging.info('Processing %s' % fn)
-        fd = gzip.open(fn, 'rt')
-        for line in fd:
-            line = line.strip()
-            if not line:
-                continue
-            appsinstalled = parse_appsinstalled(line)
-            if not appsinstalled:
-                errors += 1
-                continue
-            memc_addr = device_memc.get(appsinstalled.dev_type)
-            if not memc_addr:
-                errors += 1
-                logging.error("Unknow device type: %s" % appsinstalled.dev_type)
-                continue
-            ok = insert_appsinstalled(memc_addr, appsinstalled, options.dry)
-            if ok:
-                processed += 1
-            else:
-                errors += 1
-        if not processed:
-            fd.close()
-            # dot_rename(fn)
-            continue
+    while not q.empty():
 
-        err_rate = float(errors) / processed
-        if err_rate < NORMAL_ERR_RATE:
-            logging.info("Acceptable error rate (%s). Successfull load" % err_rate)
-        else:
-            logging.error("High error rate (%s > %s). Failed load" % (err_rate, NORMAL_ERR_RATE))
-        fd.close()
-        # dot_rename(fn)
+        line = q.get().strip()
+        if not line:
+            continue
+        appsinstalled = parse_appsinstalled(line)
+        if not appsinstalled:
+            continue
+        memc_addr = device_memc.get(appsinstalled.dev_type)
+        if not memc_addr:
+            logging.error("Unknow device type: %s" % appsinstalled.dev_type)
+            continue
+        insert_appsinstalled(memc_addr, appsinstalled, options.dry)
+
+
+def read_file(options, file):
+    threads = []
+    with gzip.open(file, 'rt') as text:
+        q = fill_queue(text)
+        for i in range(1):
+            thread = th.Thread(target=parse_text, args=(options, q))
+            thread.start()
+            threads.append(thread)
+        for thread in threads:
+            thread.join()
+
+
+def main(options):
+    processes = []
+    for file in glob.iglob(options.pattern):
+        proc = mp.Process(target=read_file, args=(options, file))
+        proc.start()
+        logging.info('Processing %s' % file)
+        processes.append(proc)
+
+    for proc in processes:
+        proc.join()
+
 
 
 def prototest():
@@ -135,7 +142,7 @@ if __name__ == '__main__':
     op.add_option("--adid", action="store", default="127.0.0.1:33015")
     op.add_option("--dvid", action="store", default="127.0.0.1:33016")
     (opts, args) = op.parse_args()
-    logging.basicConfig(filename=None, level=logging.INFO if not opts.dry else logging.DEBUG,
+    logging.basicConfig(filename=opts.log, level=logging.INFO if not opts.dry else logging.DEBUG,
                         format='[%(asctime)s] %(levelname).1s %(message)s', datefmt='%Y.%m.%d %H:%M:%S')
     if opts.test:
         prototest()

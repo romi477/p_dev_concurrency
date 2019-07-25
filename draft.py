@@ -1,9 +1,41 @@
 import gzip
+from multiprocessing.dummy import Pool
+from time import time
+
+def func(num):
+    lst = []
+    for _ in range(num):
+        lst.append(num*2)
 
 
-with gzip.open('20170929000100.tsv.gz', 'rt') as readfile:
-    with open('sample50.tsv', 'w+') as writefile:
-        for i in range(50000):
-            line = readfile.readline()
-            writefile.write(line)
+args = [10000000, 10000000, 10000000]
+
+t1 = time()
+
+for i in args:
+    func(i)
+# pool = Pool(3)
+# result = pool.map(func, args)
+# pool.close()
+# pool.join()
+
+print('executing time: ', time() - t1)
+
+
+
+
+
+
+
+
+
+
+
+
+
+# with gzip.open('big_tsv/20170929000100.tsv.gz', 'rt') as readfile:
+#     with open('sample10.tsv', 'w+') as writefile:
+#         for i in range(10000):
+#             line = readfile.readline()
+#             writefile.write(line)
 

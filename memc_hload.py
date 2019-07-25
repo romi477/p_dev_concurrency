@@ -6,9 +6,10 @@ import logging
 import memcache
 import collections
 from time import time
-import multiprocessing
+import multiprocessing as mp
 import appsinstalled_pb2
 from optparse import OptionParser
+
 
 NORMAL_ERR_RATE = 0.01
 AppsInstalled = collections.namedtuple("AppsInstalled", ["dev_type", "dev_id", "lat", "lon", "apps"])
@@ -60,71 +61,53 @@ def parse_appsinstalled(line):
     return AppsInstalled(dev_type, dev_id, lat, lon, apps)
 
 
-def fill_queue(queue, data):
-    for i in data:
-        queue.put(i)
+def fill_queue(text):
+    queue = mp.Queue()
+    for line in text:
+        queue.put(line)
     return queue
 
 
 def sub_main(options, queue):
-    errors = 0
     device_memc = {
         "idfa": options.idfa,
         "gaid": options.gaid,
         "adid": options.adid,
         "dvid": options.dvid,
     }
-    
-    obj = queue.get()
-    line = obj.strip()
-    if not line:
-        return None, errors
-    appsinstalled = parse_appsinstalled(line)
-    if not appsinstalled:
-        errors += 1
-        return None, errors
-    memc_addr = device_memc.get(appsinstalled.dev_type)
-    if not memc_addr:
-        errors += 1
-        logging.error("Unknow device type: %s" % appsinstalled.dev_type)
-        return None, errors
-    ok = insert_appsinstalled(memc_addr, appsinstalled, options.dry)
-    return ok, errors
+    while not queue.empty():
+
+        line = queue.get().strip()
+        if not line:
+            continue
+        appsinstalled = parse_appsinstalled(line)
+        if not appsinstalled:
+            continue
+        memc_addr = device_memc.get(appsinstalled.dev_type)
+        if not memc_addr:
+            logging.error("Unknow device type: %s" % appsinstalled.dev_type)
+            continue
+        insert_appsinstalled(memc_addr, appsinstalled, options.dry)
     
 
 
 def main(options):
-    workers = multiprocessing.Pool(processes=4)
-    queue = multiprocessing.Queue()
-
+    # workers = multiprocessing.Pool(processes=1)
+    processes = []
     for fn in glob.iglob(options.pattern):
-        processed = errors = 0
+
         logging.info('Processing %s' % fn)
     
-        with gzip.open(fn, 'rt') as fd:
+        with gzip.open(fn, 'rt') as text:
     
-            queue = fill_queue(queue, fd)
-            
-            ok, err = sub_main(options, queue)
-    
-            if ok:
-                processed += 1
-                errors += err
-            else:
-                errors += 1
-        
-            if not processed:
-                fd.close()
-                # dot_rename(fn)
-                continue
-        err_rate = float(errors) / processed
-        if err_rate < NORMAL_ERR_RATE:
-            logging.info("Acceptable error rate (%s). Successfull load" % err_rate)
-        else:
-            logging.error("High error rate (%s > %s). Failed load" % (err_rate, NORMAL_ERR_RATE))
-        fd.close()
-        # dot_rename(fn)
+            q = fill_queue(text)
 
+            for i in range(1):
+                p = mp.Process(target=sub_main, args=(options, q))
+                p.start()
+                processes.append(p)
+            for p in processes:
+                p.join()
 
 def prototest():
     sample = "idfa\t1rfw452y52g2gq4g\t55.55\t42.42\t1423,43,567,3,7,23\ngaid\t7rfw452y52g2gq4g\t55.55\t42.42\t7423,424"
