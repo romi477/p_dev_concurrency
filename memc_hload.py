@@ -6,6 +6,7 @@ import logging
 import memcache
 import collections
 from time import time
+import multiprocessing
 import appsinstalled_pb2
 from optparse import OptionParser
 
@@ -59,40 +60,63 @@ def parse_appsinstalled(line):
     return AppsInstalled(dev_type, dev_id, lat, lon, apps)
 
 
-def main(options):
+def fill_queue(queue, data):
+    for i in data:
+        queue.put(i)
+    return queue
+
+
+def sub_main(options, queue):
+    errors = 0
     device_memc = {
         "idfa": options.idfa,
         "gaid": options.gaid,
         "adid": options.adid,
         "dvid": options.dvid,
     }
+    
+    obj = queue.get()
+    line = obj.strip()
+    if not line:
+        return None, errors
+    appsinstalled = parse_appsinstalled(line)
+    if not appsinstalled:
+        errors += 1
+        return None, errors
+    memc_addr = device_memc.get(appsinstalled.dev_type)
+    if not memc_addr:
+        errors += 1
+        logging.error("Unknow device type: %s" % appsinstalled.dev_type)
+        return None, errors
+    ok = insert_appsinstalled(memc_addr, appsinstalled, options.dry)
+    return ok, errors
+    
+
+
+def main(options):
+    workers = multiprocessing.Pool(processes=4)
+    queue = multiprocessing.Queue()
+
     for fn in glob.iglob(options.pattern):
         processed = errors = 0
         logging.info('Processing %s' % fn)
-        fd = gzip.open(fn, 'rt')
-        for line in fd:
-            line = line.strip()
-            if not line:
-                continue
-            appsinstalled = parse_appsinstalled(line)
-            if not appsinstalled:
-                errors += 1
-                continue
-            memc_addr = device_memc.get(appsinstalled.dev_type)
-            if not memc_addr:
-                errors += 1
-                logging.error("Unknow device type: %s" % appsinstalled.dev_type)
-                continue
-            ok = insert_appsinstalled(memc_addr, appsinstalled, options.dry)
+    
+        with gzip.open(fn, 'rt') as fd:
+    
+            queue = fill_queue(queue, fd)
+            
+            ok, err = sub_main(options, queue)
+    
             if ok:
                 processed += 1
+                errors += err
             else:
                 errors += 1
-        if not processed:
-            fd.close()
-            # dot_rename(fn)
-            continue
-
+        
+            if not processed:
+                fd.close()
+                # dot_rename(fn)
+                continue
         err_rate = float(errors) / processed
         if err_rate < NORMAL_ERR_RATE:
             logging.info("Acceptable error rate (%s). Successfull load" % err_rate)
