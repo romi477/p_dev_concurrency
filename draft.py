@@ -1,25 +1,17 @@
 import gzip
 from multiprocessing.dummy import Pool
 from time import time
+from functools import partial
 
-def func(num):
-    lst = []
-    for _ in range(num):
-        lst.append(num*2)
+def fun(a, b):
+    print('a + b', a, b)
+    return a + b
+
+fun2 = partial(fun, b=1)
 
 
-args = [10000000, 10000000, 10000000]
 
-t1 = time()
-
-for i in args:
-    func(i)
-# pool = Pool(3)
-# result = pool.map(func, args)
-# pool.close()
-# pool.join()
-
-print('executing time: ', time() - t1)
+fun2(2)
 
 
 
@@ -28,7 +20,24 @@ print('executing time: ', time() - t1)
 
 
 
-
+# def func(num):
+#     lst = []
+#     for _ in range(num):
+#         lst.append(num*2)
+#
+#
+# args = [10000000, 10000000, 10000000]
+#
+# t1 = time()
+#
+# for i in args:
+#     func(i)
+# # pool = Pool(3)
+# # result = pool.map(func, args)
+# # pool.close()
+# # pool.join()
+#
+# print('executing time: ', time() - t1)
 
 
 

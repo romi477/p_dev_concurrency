@@ -6,11 +6,12 @@ import logging
 import memcache
 import collections
 from time import time
-import threading as th
-from queue import Queue
+import queue
 import appsinstalled_pb2
 import multiprocessing as mp
+import threading as th
 from optparse import OptionParser
+from functools import partial
 
 NORMAL_ERR_RATE = 0.01
 AppsInstalled = collections.namedtuple("AppsInstalled", ["dev_type", "dev_id", "lat", "lon", "apps"])
@@ -62,56 +63,51 @@ def parse_appsinstalled(line):
     return AppsInstalled(dev_type, dev_id, lat, lon, apps)
 
 
-def fill_queue(text):
-    queue = Queue()
-    for line in text:
-        queue.put(line)
-    return queue
 
-def parse_text(options, q):
+def read_file(file, options):
     device_memc = {
         "idfa": options.idfa,
         "gaid": options.gaid,
         "adid": options.adid,
         "dvid": options.dvid,
     }
-    while not q.empty():
-
-        line = q.get().strip()
-        if not line:
-            continue
-        appsinstalled = parse_appsinstalled(line)
-        if not appsinstalled:
-            continue
-        memc_addr = device_memc.get(appsinstalled.dev_type)
-        if not memc_addr:
-            logging.error("Unknow device type: %s" % appsinstalled.dev_type)
-            continue
-        insert_appsinstalled(memc_addr, appsinstalled, options.dry)
-
-
-def read_file(options, file):
-    threads = []
+    processed = errors = 0
+    logging.info('Processing %s' % file)
+    
     with gzip.open(file, 'rt') as text:
-        q = fill_queue(text)
-        for i in range(1):
-            thread = th.Thread(target=parse_text, args=(options, q))
-            thread.start()
-            threads.append(thread)
-        for thread in threads:
-            thread.join()
+        for line in text:
+            line = line.strip()
+            if not line:
+                continue
+            appsinstalled = parse_appsinstalled(line)
+            if not appsinstalled:
+                errors += 1
+                continue
+            memc_addr = device_memc.get(appsinstalled.dev_type)
+            if not memc_addr:
+                errors += 1
+                logging.error("Unknow device type: %s" % appsinstalled.dev_type)
+                continue
+            ok = insert_appsinstalled(memc_addr, appsinstalled, options.dry)
+            if ok:
+                processed += 1
+            else:
+                errors += 1
+        err_rate = float(errors) / processed
+        if err_rate < NORMAL_ERR_RATE:
+            print(file, "Acceptable error rate (%s). Successfull load" % err_rate)
+        else:
+            print(file, "High error rate (%s > %s). Failed load" % (err_rate, NORMAL_ERR_RATE))
+        # dot_rename(fn)
+
 
 
 def main(options):
-    processes = []
-    for file in glob.iglob(options.pattern):
-        proc = mp.Process(target=read_file, args=(options, file))
-        proc.start()
-        logging.info('Processing %s' % file)
-        processes.append(proc)
+    process_pool = mp.Pool()
+    results = process_pool.imap(partial(read_file, options=options), glob.iglob(options.pattern))
+    process_pool.close()
+    process_pool.join()
 
-    for proc in processes:
-        proc.join()
 
 
 
