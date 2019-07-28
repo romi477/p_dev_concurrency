@@ -24,6 +24,7 @@ def dot_rename(path):
 
 
 def insert_appsinstalled(memc_addr, appsinstalled, dry_run=False):
+    # print('in insert app')
     ua = appsinstalled_pb2.UserApps()
     ua.lat = appsinstalled.lat
     ua.lon = appsinstalled.lon
@@ -40,7 +41,9 @@ def insert_appsinstalled(memc_addr, appsinstalled, dry_run=False):
             memc.set(key, packed)
     except Exception as e:
         logging.exception("Cannot write to memc %s: %s" % (memc_addr, e))
+        # print('out false insert app')
         return False
+    # print('out True insert app')
     return True
 
 
@@ -63,6 +66,24 @@ def parse_appsinstalled(line):
     return AppsInstalled(dev_type, dev_id, lat, lon, apps)
 
 
+def insert_manager(in_queue):
+    processed = errors = 0
+    while True:
+        # print('in insert manager')
+        try:
+            task = in_queue.get(timeout=0.01)
+        except queue.Empty:
+            # print('out insert manager')
+            break
+
+        ok = insert_appsinstalled(*task)
+        # print('task:', task)
+        if ok:
+            processed += 1
+        else:
+            errors += 1
+    return processed, errors
+
 
 def read_file(file, options):
     device_memc = {
@@ -73,7 +94,13 @@ def read_file(file, options):
     }
     processed = errors = 0
     logging.info('Processing %s' % file)
-    
+    in_queue = queue.Queue()
+
+    thread_workers = [th.Thread(target=insert_manager, args=(in_queue,)) for _ in range(3)]
+    for thread in thread_workers:
+        thread.daemon = True
+        thread.start()
+
     with gzip.open(file, 'rt') as text:
         for line in text:
             line = line.strip()
@@ -88,23 +115,32 @@ def read_file(file, options):
                 errors += 1
                 logging.error("Unknow device type: %s" % appsinstalled.dev_type)
                 continue
-            ok = insert_appsinstalled(memc_addr, appsinstalled, options.dry)
-            if ok:
-                processed += 1
-            else:
-                errors += 1
-        err_rate = float(errors) / processed
-        if err_rate < NORMAL_ERR_RATE:
-            print(file, "Acceptable error rate (%s). Successfull load" % err_rate)
-        else:
-            print(file, "High error rate (%s > %s). Failed load" % (err_rate, NORMAL_ERR_RATE))
-        # dot_rename(fn)
+
+            in_queue.put((memc_addr, appsinstalled, options.dry))
+
+            proc, err = insert_manager(in_queue)
+
+            processed += proc
+            errors += err
+
+    in_queue.join()
+    for _ in range(3):
+        in_queue.put(None)
+    for thread in thread_workers:
+        thread.join()
+
+    err_rate = float(errors) / processed
+    if err_rate < NORMAL_ERR_RATE:
+        print(file, "Acceptable error rate (%s). Successfull load" % err_rate)
+    else:
+        print(file, "High error rate (%s > %s). Failed load" % (err_rate, NORMAL_ERR_RATE))
+    # dot_rename(fn)
 
 
 
 def main(options):
     process_pool = mp.Pool()
-    results = process_pool.imap(partial(read_file, options=options), glob.iglob(options.pattern))
+    process_pool.map(partial(read_file, options=options), glob.iglob(options.pattern))
     process_pool.close()
     process_pool.join()
 

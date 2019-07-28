@@ -1,23 +1,28 @@
 import gzip
+import multiprocessing as mp
 from multiprocessing.dummy import Pool
 from time import time
 from functools import partial
 
-def fun(a, b):
-    print('a + b', a, b)
-    return a + b
 
-fun2 = partial(fun, b=1)
-
-
-
-fun2(2)
+t = mp.dummy.Thread()
+print(t)
 
 
 
 
 
 
+
+
+
+
+# def fun(a, b):
+#     print('a + b', a, b)
+#     return a + b
+#
+# fun2 = partial(fun, b=1)
+# fun2(2)
 
 
 # def func(num):
