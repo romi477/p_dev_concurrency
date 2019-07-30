@@ -9,6 +9,7 @@ from time import time
 import queue
 import appsinstalled_pb2
 import multiprocessing as mp
+import multiprocessing
 import threading as th
 from optparse import OptionParser
 from functools import partial
@@ -23,22 +24,20 @@ def dot_rename(path):
     os.rename(path, os.path.join(head, "." + fn))
 
 
-lock = th.Lock()
-event = th.Event()
+class NoDaemonProcess(mp.Process):
+    def _get_daemon(self):
+        return False
+    
+    def _set_daemon(self):
+        pass
+    daemon = property(_get_daemon, _set_daemon)
+    
 
-class Mythread(th.Thread):
-    def __init__(self, _queue, *args, **kwargs):
-        self.queue = _queue
-        super().__init__(*args, **kwargs)
-
-    def run(self):
-        while self.queue.empty():
-            self.queue.get()
-            insert_manager(self.queue)
-
+class NoDaemonPool(multiprocessing.pool.Pool):
+    Process = NoDaemonProcess
+    
 
 def insert_appsinstalled(memc_addr, appsinstalled, dry_run=False):
-    # print('in insert app')
     ua = appsinstalled_pb2.UserApps()
     ua.lat = appsinstalled.lat
     ua.lon = appsinstalled.lon
@@ -55,9 +54,7 @@ def insert_appsinstalled(memc_addr, appsinstalled, dry_run=False):
             memc.set(key, packed)
     except Exception as e:
         logging.exception("Cannot write to memc %s: %s" % (memc_addr, e))
-        # print('out false insert app')
         return False
-    # print('out True insert app')
     return True
 
 
@@ -65,7 +62,6 @@ def parse_appsinstalled(line):
     line_parts = line.strip().split("\t")
     if len(line_parts) < 5:
         return
-    # print('MLINE', line_parts)
     dev_type, dev_id, lat, lon, raw_apps = line_parts
     if not dev_type or not dev_id:
         return
@@ -84,15 +80,11 @@ def parse_appsinstalled(line):
 def insert_manager(in_queue):
     # processed = errors = 0
     while True:
-        # print('in insert manager')
-        # event.wait()
         try:
             task = in_queue.get()
         except:
-            # print('out insert manager')
             break
         insert_appsinstalled(*task)
-        # print('task:', task)
         # if ok:
         #     processed += 1
         # else:
@@ -110,12 +102,10 @@ def read_file(file, options):
     processed = 1
     errors = 0
     logging.info('Processing %s' % file)
-    in_queue = queue.Queue(maxsize=10)
+    in_queue = mp.Queue()
 
-    # thread_workers = [th.Thread(target=insert_manager, args=(in_queue,), daemon=True) for _ in range(2)]
-    thread_workers = [Mythread(in_queue) for _ in range(3)]
-    for thread in thread_workers:
-        thread.start()
+    sub_pool = mp.Pool(2)
+    processing = sub_pool.map(insert_manager, [in_queue])
 
     with gzip.open(file, 'rt') as text:
         for line in text:
@@ -131,22 +121,10 @@ def read_file(file, options):
                 errors += 1
                 logging.error("Unknow device type: %s" % appsinstalled.dev_type)
                 continue
-            in_queue.put((memc_addr, appsinstalled, options.dry), block=True)
-            # event.set()
-            # event.clear()
-            
-            # if not all([thread.is_alive() for thread in thread_workers]):
-            #     print('THREAD DONE')
-            # proc, err = insert_manager(in_queue)
+            in_queue.put((memc_addr, appsinstalled, options.dry))
 
-            # processed += proc
-            # errors += err
-    #
     in_queue.join()
-    # for _ in range(3):
-    #     in_queue.put(None)
-    for thread in thread_workers:
-        thread.join()
+
     err_rate = float(errors) / processed
     if err_rate < NORMAL_ERR_RATE:
         print(file, "Acceptable error rate (%s). Successfull load" % err_rate)
@@ -156,10 +134,11 @@ def read_file(file, options):
 
 
 def main(options):
-    process_pool = mp.Pool()
-    process_pool.map(partial(read_file, options=options), glob.iglob(options.pattern))
-    process_pool.close()
-    process_pool.join()
+    # pool = NoDaemonPool(processes=1)
+    pool = mp.Pool(3)
+    pool.map(partial(read_file, options=options), glob.iglob(options.pattern))
+    pool.close()
+    pool.join()
 
 
 def prototest():

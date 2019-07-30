@@ -3,48 +3,7 @@ import multiprocessing as mp
 from multiprocessing.dummy import Pool
 from time import time
 from functools import partial
-
-
-t = mp.dummy.Thread()
-print(t)
-
-
-
-
-
-
-
-
-
-
-# def fun(a, b):
-#     print('a + b', a, b)
-#     return a + b
-#
-# fun2 = partial(fun, b=1)
-# fun2(2)
-
-
-# def func(num):
-#     lst = []
-#     for _ in range(num):
-#         lst.append(num*2)
-#
-#
-# args = [10000000, 10000000, 10000000]
-#
-# t1 = time()
-#
-# for i in args:
-#     func(i)
-# # pool = Pool(3)
-# # result = pool.map(func, args)
-# # pool.close()
-# # pool.join()
-#
-# print('executing time: ', time() - t1)
-
-
+import queue
 
 
 # with gzip.open('big_tsv/20170929000100.tsv.gz', 'rt') as readfile:
@@ -53,3 +12,48 @@ print(t)
 #             line = readfile.readline()
 #             writefile.write(line)
 
+
+def do_job1(q):
+    while not q.empty():
+    # while True:
+        try:
+            task = q.get(timeout=0.1)
+        except queue.Empty:
+            print('Queue empty exception')
+            break
+        print('current process: ', mp.current_process().name)
+        print('TASK: ', task)
+        
+        
+def do_job2(q):
+    while not q.empty():
+    # while True:
+        try:
+            task = q.get(timeout=0.1)
+        except queue.Empty:
+            print('Queue empty exception')
+            break
+        print('current process: ', mp.current_process().name)
+        print('TASK: ', f'{task}+')
+
+
+def main():
+    que = mp.Queue()
+    
+    # pool = mp.Pool(1)
+    # res = pool.map(do_job, [que])
+    # print('RES', res)
+    proc1 = mp.Process(target=do_job1, args=(que,), name='proc1')
+    proc2 = mp.Process(target=do_job2, args=(que,), name='proc2')
+    
+    proc1.start()
+    proc2.start()
+    
+    for i in range(20):
+        que.put(i)
+        
+    proc1.join()
+    proc2.join()
+    
+if __name__ == '__main__':
+    main()
