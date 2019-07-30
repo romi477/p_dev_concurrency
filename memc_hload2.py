@@ -6,11 +6,8 @@ import logging
 import memcache
 import collections
 from time import time
-import queue
 import appsinstalled_pb2
 import multiprocessing as mp
-import multiprocessing
-import threading as th
 from optparse import OptionParser
 from functools import partial
 
@@ -25,17 +22,24 @@ def dot_rename(path):
 
 
 class NoDaemonProcess(mp.Process):
-    def _get_daemon(self):
+    @property
+    def daemon(self):
         return False
-    
-    def _set_daemon(self):
-        pass
-    daemon = property(_get_daemon, _set_daemon)
-    
 
-class NoDaemonPool(multiprocessing.pool.Pool):
+    @daemon.setter
+    def daemon(self, value):
+        pass
+
+
+class NoDaemonContext(type(mp.get_context())):
     Process = NoDaemonProcess
-    
+
+
+class MyPool(mp.pool.Pool):
+    def __init__(self, *args, **kwargs):
+        kwargs['context'] = NoDaemonContext()
+        super(MyPool, self).__init__(*args, **kwargs)
+
 
 def insert_appsinstalled(memc_addr, appsinstalled, dry_run=False):
     ua = appsinstalled_pb2.UserApps()
@@ -134,12 +138,11 @@ def read_file(file, options):
 
 
 def main(options):
-    # pool = NoDaemonPool(processes=1)
-    pool = mp.Pool(3)
+    pool = MyPool(processes=1)
+    # pool = mp.Pool(3)
     pool.map(partial(read_file, options=options), glob.iglob(options.pattern))
     pool.close()
     pool.join()
-
 
 def prototest():
     sample = "idfa\t1rfw452y52g2gq4g\t55.55\t42.42\t1423,43,567,3,7,23\ngaid\t7rfw452y52g2gq4g\t55.55\t42.42\t7423,424"
