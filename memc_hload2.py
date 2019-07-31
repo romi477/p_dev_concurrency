@@ -2,6 +2,7 @@ import os
 import sys
 import glob
 import gzip
+import queue
 import logging
 import memcache
 import collections
@@ -21,26 +22,6 @@ def dot_rename(path):
     os.rename(path, os.path.join(head, "." + fn))
 
 
-class NoDaemonProcess(mp.Process):
-    @property
-    def daemon(self):
-        return False
-
-    @daemon.setter
-    def daemon(self, value):
-        pass
-
-
-class NoDaemonContext(type(mp.get_context())):
-    Process = NoDaemonProcess
-
-
-class MyPool(mp.pool.Pool):
-    def __init__(self, *args, **kwargs):
-        kwargs['context'] = NoDaemonContext()
-        super(MyPool, self).__init__(*args, **kwargs)
-
-
 def insert_appsinstalled(memc_addr, appsinstalled, dry_run=False):
     ua = appsinstalled_pb2.UserApps()
     ua.lat = appsinstalled.lat
@@ -54,7 +35,7 @@ def insert_appsinstalled(memc_addr, appsinstalled, dry_run=False):
         if dry_run:
             logging.debug("%s - %s -> %s" % (memc_addr, key, str(ua).replace("\n", " ")))
         else:
-            memc = memcache.Client([memc_addr])
+            memc = memcache.Client([memc_addr], socket_timeout=1)
             memc.set(key, packed)
     except Exception as e:
         logging.exception("Cannot write to memc %s: %s" % (memc_addr, e))
@@ -83,10 +64,12 @@ def parse_appsinstalled(line):
 
 def insert_manager(in_queue):
     # processed = errors = 0
-    while True:
+    while not in_queue.empty():
         try:
-            task = in_queue.get()
-        except:
+            task = in_queue.get(block=True)
+            print('current process: ', mp.current_process().name)
+        except queue.Empty:
+            print("Empty queue exception")
             break
         insert_appsinstalled(*task)
         # if ok:
@@ -106,11 +89,17 @@ def read_file(file, options):
     processed = 1
     errors = 0
     logging.info('Processing %s' % file)
-    in_queue = mp.Queue()
+    in_queue = mp.Manager().Queue()
 
-    sub_pool = mp.Pool(2)
-    processing = sub_pool.map(insert_manager, [in_queue])
+    processes = []
 
+    for i in range(1):
+        proc = mp.Process(target=insert_manager, args=(in_queue,), name=f"proc{i + 1}")
+        processes.append(proc)
+        
+    for proc in processes:
+        proc.start()
+        
     with gzip.open(file, 'rt') as text:
         for line in text:
             line = line.strip()
@@ -127,7 +116,9 @@ def read_file(file, options):
                 continue
             in_queue.put((memc_addr, appsinstalled, options.dry))
 
-    in_queue.join()
+    # in_queue.join()
+    for proc in processes:
+        proc.join()
 
     err_rate = float(errors) / processed
     if err_rate < NORMAL_ERR_RATE:
@@ -138,11 +129,13 @@ def read_file(file, options):
 
 
 def main(options):
-    pool = MyPool(processes=1)
-    # pool = mp.Pool(3)
-    pool.map(partial(read_file, options=options), glob.iglob(options.pattern))
-    pool.close()
-    pool.join()
+    # pool = mp.Pool(1)
+    # pool.map(partial(read_file, options=options), glob.iglob(options.pattern))
+    # pool.close()
+    # pool.join()
+    for file in glob.iglob(options.pattern):
+        read_file(file, options)
+
 
 def prototest():
     sample = "idfa\t1rfw452y52g2gq4g\t55.55\t42.42\t1423,43,567,3,7,23\ngaid\t7rfw452y52g2gq4g\t55.55\t42.42\t7423,424"

@@ -40,6 +40,7 @@ def main():
 
     for proc in processes:
         proc.join()
+    print("Core: ", mp.cpu_count())
 
 if __name__ == '__main__':
     t1 = time()
